@@ -3,7 +3,7 @@
   "name": "Page Summarizer",
   "version": "1.0.0",
   "description": "One-click grounded page summaries in the side panel.",
-  "permissions": ["storage", "sidePanel", "activeTab"],
+  "permissions": ["storage", "sidePanel", "tabs"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js", "type": "module" },
   "side_panel": { "default_path": "sidepanel.html" },

@@ -1,3 +1,8 @@
 node_modules/
 *.log
 .DS_Store
+
+# agent skill installs (dev tooling, not part of the extension)
+.agents/
+.claude/
+skills-lock.json
