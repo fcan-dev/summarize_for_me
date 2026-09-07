@@ -10,11 +10,18 @@ chrome.action.onClicked.addListener((tab) => {
   });
 });
 
-// Notify the side panel whenever the user switches tabs so it can show the
-// newly active page's context (cached summary if one exists, else the
-// "summarize this page" state).
+// Notify the side panel whenever the user switches tabs OR navigates to a
+// new page in the same tab so it can show the newly active page's context
+// (cached summary if one exists, else the "summarize this page" state).
 chrome.tabs.onActivated.addListener((info) => {
   chrome.runtime.sendMessage({ type: "TAB_ACTIVATED", tabId: info.tabId }).catch(() => {});
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  // A completed navigation to a different URL is a new page context.
+  if (changeInfo.status === "complete" && changeInfo.url) {
+    chrome.runtime.sendMessage({ type: "TAB_ACTIVATED", tabId }).catch(() => {});
+  }
 });
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
