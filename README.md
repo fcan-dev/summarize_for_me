@@ -11,7 +11,8 @@ left. It uses an OpenAI-compatible chat-completions endpoint (default: a local
 - Page text extracted with Mozilla Readability (falls back to raw body text).
 - Streams tokens live as Markdown (including a live “Thinking…” indicator for reasoning models).
 - **Local history:** every finished summary is stored in Chrome local storage keyed by page URL, so revisiting a page shows its saved summary instantly even after a browser restart.
-- **Tab-aware panel:** switching tabs updates the panel to that page's context — its cached summary if one exists, otherwise the “summarize this page” state. A summary you started keeps running **in the background** when you switch tabs; it finishes and is saved to history, so returning to that page shows it.
+- **Tab-aware panel:** switching tabs updates the panel to that page's context — its cached summary if one exists, otherwise the “summarize this page” state.
+- **Background queue:** each summary is a job in a worker-owned FIFO queue, processed one at a time. Starting another summary (on another page or tab) just enqueues it — nothing is cancelled. Jobs you're not currently viewing stream and save in the background, and a queue indicator shows how many are waiting. Every finished summary is always stored.
 - Configurable endpoint (base URL / key / model / summary length), pre-filled with local defaults.
 - Works offline / on a LAN (all libraries bundled locally, no CDN).
 
