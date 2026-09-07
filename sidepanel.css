@@ -21,3 +21,13 @@ details label { display: block; margin: 6px 0; font-size: 13px; }
 details input, details select { display: block; width: 100%; margin-top: 2px; padding: 5px; border: 1px solid #8885; border-radius: 5px; background: transparent; }
 #btn-save { margin-top: 6px; }
 #save-note { font-size: 12px; opacity: .7; margin-left: 8px; }
+
+#history { margin-top: 14px; border-top: 1px solid #8883; padding-top: 8px; }
+#history summary { cursor: pointer; font-weight: 600; }
+#history-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 220px; overflow-y: auto; }
+#history-list li { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-bottom: 1px solid #8882; font-size: 12px; }
+#history-list .h-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#history-list .h-meta { opacity: .6; }
+#history-list button { margin-left: 4px; padding: 2px 6px; border: 1px solid #8884; background: transparent; border-radius: 5px; cursor: pointer; font-size: 11px; }
+#history-list button:hover { background: #2563eb22; }
+#history-empty { font-size: 12px; opacity: .6; padding: 4px 0; }
