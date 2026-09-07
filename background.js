@@ -4,44 +4,26 @@ import { buildMessages } from "./lib/prompt.js";
 
 const DEFAULT_MAX_INPUT_CHARS = 100000;
 
-// The tab that opened the side panel is stored in session storage so it
-// survives service-worker restarts (MV3 terminates idle workers). Without
-// this, GET_TAB would fall back to the *currently active* tab, making the
-// panel jump as the user switches tabs.
-const TAB_KEY = "panelTabId";
-
-async function setPanelTabId(tabId) {
-  try { await chrome.storage.session.set({ [TAB_KEY]: tabId }); }
-  catch (e) { console.error("session.set failed", e); }
-}
-
-async function getPanelTabId() {
-  try { return (await chrome.storage.session.get(TAB_KEY))[TAB_KEY] ?? null; }
-  catch { return null; }
-}
-
 chrome.action.onClicked.addListener((tab) => {
-  setPanelTabId(tab.id);
   chrome.sidePanel.open({ windowId: tab.windowId }).catch((err) => {
     console.error("sidePanel.open failed", err);
   });
+});
+
+// Notify the side panel whenever the user switches tabs so it can show the
+// newly active page's context (cached summary if one exists, else the
+// "summarize this page" state).
+chrome.tabs.onActivated.addListener((info) => {
+  chrome.runtime.sendMessage({ type: "TAB_ACTIVATED", tabId: info.tabId }).catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || typeof msg !== "object") return false;
 
   if (msg.type === "GET_TAB") {
+    // The panel follows the actively focused tab.
     const finish = (t) => sendResponse(t ? { tabId: t.id, url: t.url, title: t.title } : { error: "no active tab" });
-    (async () => {
-      const tabId = await getPanelTabId();
-      if (tabId != null) {
-        // Use the tab that opened the panel; if it's been closed, say so
-        // rather than silently switching to whatever tab is now active.
-        chrome.tabs.get(tabId).then(finish).catch(() => sendResponse({ error: "no active tab" }));
-      } else {
-        chrome.tabs.query({ active: true, currentWindow: true }).then(([t]) => finish(t)).catch((e) => sendResponse({ error: e.message }));
-      }
-    })();
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([t]) => finish(t)).catch((e) => sendResponse({ error: e.message }));
     return true; // respond asynchronously
   }
 

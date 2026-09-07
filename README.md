@@ -7,9 +7,12 @@ left. It uses an OpenAI-compatible chat-completions endpoint (default: a local
 
 ## Features
 - One toolbar-icon click → grounded, structured summary (TL;DR → Key points → Takeaway) with short quotes.
+- Summaries are written in the **same language as the article**. You click **Summarize current page** to run — it does not auto-run on panel open.
 - Page text extracted with Mozilla Readability (falls back to raw body text).
-- Streams tokens live as Markdown.
-- Configurable endpoint (base URL / key / model), pre-filled with local defaults.
+- Streams tokens live as Markdown (including a live “Thinking…” indicator for reasoning models).
+- **Local history:** every finished summary is stored in Chrome local storage keyed by page URL, so revisiting a page shows its saved summary instantly even after a browser restart.
+- **Tab-aware panel:** switching tabs updates the panel to that page's context — its cached summary if one exists, otherwise the “summarize this page” state.
+- Configurable endpoint (base URL / key / model / summary length), pre-filled with local defaults.
 - Works offline / on a LAN (all libraries bundled locally, no CDN).
 
 ## Install (unpacked)
