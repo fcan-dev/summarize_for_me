@@ -40,6 +40,14 @@ async function saveSummary(url, record) {
   catch (e) { console.error("saveSummary failed", e); }
 }
 
+async function deleteSummary(url) {
+  if (!url) return;
+  const all = await getAllSummaries();
+  delete all[url];
+  try { await chrome.storage.local.set({ [SUMMARY_DB_KEY]: all }); }
+  catch (e) { console.error("deleteSummary failed", e); }
+}
+
 const $ = (id) => document.getElementById(id);
 const el = {
   pageInfo: $("page-info"), pageTitle: $("page-title"), pageMeta: $("page-meta"),
@@ -48,6 +56,7 @@ const el = {
   setBaseUrl: $("set-baseurl"), setApiKey: $("set-apikey"), setModel: $("set-model"),
   setMaxLength: $("set-maxlength"),
   btnSave: $("btn-save"), saveNote: $("save-note"),
+  history: $("history"), historyList: $("history-list"),
 };
 
 // --- storage (sync with local fallback) ---
@@ -97,8 +106,22 @@ const parseMD = (s) => (typeof marked.parse === "function" ? marked.parse(s) : m
 function renderMarkdown(md) {
   el.summary.innerHTML = DOMPurify.sanitize(parseMD(md || ""));
 }
+function escapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
 
 // --- pipeline ---
+// Cancel any in-flight stream and close its port, if one is open.
+function stopStream() {
+  if (port) {
+    const old = port;
+    port = null;
+    old.disconnect(); // background aborts the fetch via onDisconnect
+  }
+}
+
 function startSummarize(page, settings) {
   accText = "";
   let reasoningCount = 0;
@@ -106,6 +129,10 @@ function startSummarize(page, settings) {
   el.btnStop.classList.remove("hidden");
   el.btnRerun.classList.add("hidden");
   setStatus("Summarizing…");
+
+  // Never run two streams at once: starting a new summary cancels any
+  // in-flight one first, so A then B don't break each other.
+  stopStream();
 
   port = chrome.runtime.connect({ name: "summarize" });
   port.onMessage.addListener((msg) => {
@@ -130,6 +157,7 @@ function startSummarize(page, settings) {
           summary: accText,
           createdAt: Date.now(),
         });
+        renderHistory();
       }
       finalize("Done");
     } else if (msg.stopped) {
@@ -208,7 +236,7 @@ async function refreshForCurrentTab() {
   el.pageTitle.textContent = tab.title || "(untitled)";
   el.pageMeta.textContent = [tab.url || ""].filter(Boolean).join(" · ");
 
-  if (port) { port.disconnect(); port = null; }
+  stopStream(); // cancel any in-flight summary before switching context
   el.btnStop.classList.add("hidden");
 
   const cached = await getSummary(currentUrl);
@@ -223,11 +251,68 @@ async function refreshForCurrentTab() {
   }
 }
 
+// --- history view ---
+// Render the list of all stored summaries, newest first.
+async function renderHistory() {
+  const all = await getAllSummaries();
+  const entries = Object.values(all)
+    .filter((e) => e && e.summary)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  if (entries.length === 0) {
+    el.historyList.innerHTML = '<li class="h-title" id="history-empty">No summaries yet.</li>';
+    return;
+  }
+  el.historyList.innerHTML = entries.map((e) => {
+    const title = escapeHtml(e.title || "(untitled)");
+    const meta = e.siteName || "";
+    const ts = e.createdAt ? new Date(e.createdAt).toLocaleDateString() : "";
+    return (
+      `<li><span class="h-title" title="${escapeHtml(e.url || "")}">${title}</span>` +
+      `<span class="h-meta">${escapeHtml(meta)}${meta ? " · " : ""}${escapeHtml(ts)}</span>` +
+      `<button data-view="${encodeURIComponent(e.url)}">View</button>` +
+      `<button data-del="${encodeURIComponent(e.url)}">✕</button></li>`
+    );
+  }).join("");
+}
+
+// Show a stored summary (from the history list) in the main view without
+// switching the Chrome tab.
+function viewHistoryItem(url) {
+  getSummary(url).then((cached) => {
+    if (!cached) return;
+    currentUrl = url;
+    el.pageInfo.classList.remove("hidden");
+    el.pageTitle.textContent = cached.title || "(untitled)";
+    el.pageMeta.textContent = [cached.siteName, url, cached.charCount ? cached.charCount + " chars" : ""]
+      .filter(Boolean).join(" · ");
+    stopStream();
+    el.summary.innerHTML = DOMPurify.sanitize(parseMD(cached.summary));
+    setStatus("From history");
+    el.btnStop.classList.add("hidden");
+    el.btnRerun.classList.remove("hidden");
+  });
+}
+
 // --- wiring ---
 el.btnSummarize.addEventListener("click", summarizeCurrentPage);
 el.btnRerun.addEventListener("click", summarizeCurrentPage);
 el.btnStop.addEventListener("click", () => { if (port) port.postMessage({ cancel: true }); });
 el.btnSave.addEventListener("click", saveSettings);
+
+// Populate history when it is opened (and refresh on click within it).
+el.history.addEventListener("toggle", () => { if (el.history.open) renderHistory(); });
+el.historyList.addEventListener("click", async (ev) => {
+  const viewBtn = ev.target.closest("button[data-view]");
+  const delBtn = ev.target.closest("button[data-del]");
+  if (viewBtn) {
+    viewHistoryItem(decodeURIComponent(viewBtn.dataset.view));
+  } else if (delBtn) {
+    const url = decodeURIComponent(delBtn.dataset.del);
+    await deleteSummary(url);
+    await renderHistory();
+  }
+});
 
 // React to tab switches so the panel always reflects the active page's
 // context (cached summary if one exists, else the default state).
