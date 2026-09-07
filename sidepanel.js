@@ -12,7 +12,6 @@ const DEFAULTS = {
 const MAX_LENGTH_TOKENS = { short: 512, medium: 1024, long: 2048 };
 
 let currentUrl = null; // URL of the page the panel is currently showing
-let currentStream = null; // the in-flight/background summary stream, if any
 
 // Summary history. Stored in chrome.storage.local keyed by page URL so it
 // survives browser restarts. Each value: { url, title, siteName, charCount,
@@ -50,7 +49,7 @@ const $ = (id) => document.getElementById(id);
 const el = {
   pageInfo: $("page-info"), pageTitle: $("page-title"), pageMeta: $("page-meta"),
   btnSummarize: $("btn-summarize"), btnRerun: $("btn-rerun"), btnStop: $("btn-stop"),
-  status: $("status"), summary: $("summary"),
+  status: $("status"), summary: $("summary"), queueInfo: $("queue-info"),
   setBaseUrl: $("set-baseurl"), setApiKey: $("set-apikey"), setModel: $("set-model"),
   setMaxLength: $("set-maxlength"),
   btnSave: $("btn-save"), saveNote: $("save-note"),
@@ -110,107 +109,43 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-// --- pipeline ---
-// Fully cancel the in-flight stream and close its port (background aborts the
-// fetch via onDisconnect). Used by the Stop button and when starting a new
-// summary — NOT on tab switch, which only backgrounds the stream.
-function stopStream() {
-  const s = currentStream;
-  if (s && s.port) {
-    currentStream = null;
-    s.port.disconnect();
+// --- pipeline (background queue events) ---
+// The worker owns a FIFO queue and broadcasts SUMMARY_* / QUEUE_CHANGED
+// events. The panel renders at most one job (renderJob) — the one started
+// for the currently shown page; everything else streams & saves in the bg.
+// Buffers for ALL in-flight/background jobs so every summary is saved, even
+// when the panel only paints the foreground job for the currently shown page.
+const jobs = new Map(); // id -> { page, buffer, reasoning }
+let renderJobId = null; // id of the job being painted in the panel, if any
+let queueRunning = 0;
+let queueWaiting = 0;
+
+const isForeground = (id) => renderJobId === id;
+
+function updateQueueInfo() {
+  const total = queueRunning + queueWaiting;
+  if (total === 0) {
+    el.queueInfo.classList.add("hidden");
+    el.queueInfo.textContent = "";
+    return;
   }
+  el.queueInfo.classList.remove("hidden");
+  el.queueInfo.textContent =
+    (queueRunning ? "Summarizing…" : "Queued…") +
+    (queueWaiting ? ` · ${queueWaiting} waiting` : "");
 }
 
-// Keep the current stream running in the background: mark it backgrounded so
-// it stops painting to the panel, but leave the port open so the fetch
-// continues. Its result is still saved to the local DB on completion.
-function backgroundCurrentStream() {
-  if (currentStream) currentStream.backgrounded = true;
-}
-
-function startSummarize(page, settings) {
-  stopStream(); // cancel any prior stream so there's never two at once
-
-  // Bind this stream to its own page metadata + port so a tab switch (which
-  // changes currentUrl / the visible context) can't misattribute the saved
-  // summary, and a stale stream's disconnect can't kill a newer one.
-  const stream = {
-    url: (page && page.url) || currentUrl,
-    title: (page && page.title) || "",
-    siteName: (page && page.siteName) || "",
-    charCount: (page && page.charCount) || 0,
-    buffer: "",
-    backgrounded: false,
-    port: null,
-  };
-  currentStream = stream;
-  const isForeground = () => currentStream === stream && !stream.backgrounded;
-
-  el.summary.innerHTML = "";
-  el.btnStop.classList.remove("hidden");
-  el.btnRerun.classList.add("hidden");
-  setStatus("Summarizing…");
-
-  const p = chrome.runtime.connect({ name: "summarize" });
-  stream.port = p;
-
-  p.onMessage.addListener((msg) => {
-    // Reasoning models (e.g. Qwen3) "think" first via delta.reasoning_content.
-    if (msg.reasoning) {
-      stream.reasoning = (stream.reasoning || 0) + msg.reasoning.length;
-      if (isForeground() && el.summary.childElementCount === 0) setStatus(`Thinking… (${stream.reasoning})`);
-    } else if (msg.token) {
-      stream.buffer += msg.token;
-      if (isForeground()) {
-        if (el.summary.childElementCount === 0) setStatus("Summarizing…");
-        renderMarkdown(stream.buffer);
-      }
-    } else if (msg.done) {
-      // Persist the finished summary keyed by THIS stream's URL (local db),
-      // even if the stream ran in the background while another tab was shown.
-      if (stream.url && stream.buffer.trim()) {
-        saveSummary(stream.url, {
-          url: stream.url,
-          title: stream.title,
-          siteName: stream.siteName,
-          charCount: stream.charCount,
-          summary: stream.buffer,
-          createdAt: Date.now(),
-        });
-        renderHistory();
-      }
-      finishStream(stream, "Done");
-    } else if (msg.stopped) {
-      finishStream(stream, "(stopped)");
-    } else if (msg.error) {
-      if (isForeground()) {
-        setStatus("Error: " + (msg.error.message || "unknown") + (msg.error.detail ? " — " + msg.error.detail : ""), "error");
-      }
-      finishStream(stream);
-    }
-  });
-  p.onDisconnect.addListener(() => finishStream(stream));
-
-  p.postMessage({
-    baseUrl: settings.baseUrl, apiKey: settings.apiKey, model: settings.model,
-    maxTokens: MAX_LENGTH_TOKENS[settings.maxLength] || MAX_LENGTH_TOKENS.medium,
-    maxInputChars: settings.maxInputChars, page,
-  });
-}
-
-// Clean up a stream. No-ops if it's no longer the current stream (e.g. it was
-// replaced or cancelled). Only touches the panel UI if it was foreground.
-function finishStream(stream, statusText) {
-  if (currentStream !== stream) return;
-  const wasForeground = !stream.backgrounded;
-  if (stream.port) { try { stream.port.disconnect(); } catch {} stream.port = null; }
-  currentStream = null;
-  if (wasForeground) {
-    el.btnStop.classList.add("hidden");
-    el.btnRerun.classList.remove("hidden");
-    if (statusText && el.status.textContent === "Summarizing…") setStatus(statusText);
+function jobFor(id, page) {
+  let j = jobs.get(id);
+  if (!j) {
+    j = {
+      page: page || { url: "", title: "", siteName: "", charCount: 0 },
+      buffer: "",
+      reasoning: 0,
+    };
+    jobs.set(id, j);
   }
+  return j;
 }
 
 async function runSummarize(page) {
@@ -220,7 +155,98 @@ async function runSummarize(page) {
     return;
   }
   currentUrl = (page && page.url) || currentUrl;
-  startSummarize(page, settings);
+
+  el.summary.innerHTML = "";
+  el.btnStop.classList.remove("hidden");
+  el.btnRerun.classList.add("hidden");
+  setStatus("Queuing…");
+
+  const res = await new Promise((resolve) =>
+    chrome.runtime.sendMessage({ type: "ENQUEUE", page, settings }, resolve)
+  );
+  if (res && res.id != null) {
+    jobFor(res.id, page); // start buffering this job
+    renderJobId = res.id; // and paint it (it's the current view's summary)
+  }
+  setStatus("Summarizing…");
+}
+
+// Handle a summary-progress event broadcast by the background worker.
+function handleSummaryEvent(msg) {
+  if (!msg || typeof msg !== "object") return;
+  const id = msg.id;
+
+  if (msg.type === "QUEUE_CHANGED") {
+    queueRunning = msg.running || 0;
+    queueWaiting = msg.waiting || 0;
+    updateQueueInfo();
+    return;
+  }
+
+  if (msg.type === "SUMMARY_STARTED") {
+    jobFor(id, msg.page);
+    if (isForeground(id)) setStatus("Summarizing…");
+    return;
+  }
+
+  if (msg.type === "SUMMARY_REASONING") {
+    const j = jobFor(id, msg.page);
+    j.reasoning += (msg.reasoning || "").length;
+    if (isForeground(id) && el.summary.childElementCount === 0) setStatus(`Thinking… (${j.reasoning})`);
+    return;
+  }
+
+  if (msg.type === "SUMMARY_TOKEN") {
+    const j = jobFor(id, msg.page);
+    j.buffer += msg.token || "";
+    if (isForeground(id)) {
+      if (el.summary.childElementCount === 0) setStatus("Summarizing…");
+      renderMarkdown(j.buffer);
+    }
+    return;
+  }
+
+  if (msg.type === "SUMMARY_DONE") {
+    // Persist from the buffered job (works for background jobs too).
+    const j = jobs.get(id);
+    if (j && j.page.url && j.buffer.trim()) {
+      saveSummary(j.page.url, {
+        url: j.page.url,
+        title: j.page.title || "",
+        siteName: j.page.siteName || "",
+        charCount: j.page.charCount || 0,
+        summary: j.buffer,
+        createdAt: Date.now(),
+      });
+      renderHistory();
+    }
+    jobs.delete(id);
+    if (isForeground(id)) finishForeground("Done");
+    return;
+  }
+
+  if (msg.type === "SUMMARY_ERROR") {
+    if (isForeground(id)) {
+      setStatus("Error: " + (msg.message || "unknown") + (msg.detail ? " — " + msg.detail : ""), "error");
+    }
+    jobs.delete(id);
+    if (isForeground(id)) finishForeground();
+    return;
+  }
+
+  if (msg.type === "SUMMARY_STOPPED") {
+    jobs.delete(id);
+    if (isForeground(id)) finishForeground("(stopped)");
+    return;
+  }
+}
+
+// Clear the panel's rendering of the foreground (currently-shown) job.
+function finishForeground(statusText) {
+  renderJobId = null;
+  el.btnStop.classList.add("hidden");
+  el.btnRerun.classList.remove("hidden");
+  if (statusText && el.status.textContent === "Summarizing…") setStatus(statusText);
 }
 
 // --- extraction via background ---
@@ -263,11 +289,26 @@ async function refreshForCurrentTab() {
   el.pageTitle.textContent = tab.title || "(untitled)";
   el.pageMeta.textContent = [tab.url || ""].filter(Boolean).join(" · ");
 
-  // Keep any in-flight summary running in the background (do NOT cancel it)
-  // so it finishes and saves even after switching tabs; the panel now shows
-  // the newly active tab's context instead.
-  backgroundCurrentStream();
+  // Stop painting the previous foreground job in the panel; background jobs
+  // (in the worker queue) continue independently and save on completion.
+  renderJobId = null;
   el.btnStop.classList.add("hidden");
+
+  // If a job is still running for THIS page, re-attach it as the foreground
+  // so the stream stays visible live (it's more current than any saved one).
+  let runningForThisPage = null;
+  for (const [jid, j] of jobs) {
+    if (j.page && j.page.url === currentUrl) { runningForThisPage = { jid, j }; break; }
+  }
+
+  if (runningForThisPage) {
+    renderJobId = runningForThisPage.jid;
+    if (runningForThisPage.j.buffer.trim()) renderMarkdown(runningForThisPage.j.buffer);
+    setStatus("Summarizing…");
+    el.btnStop.classList.remove("hidden");
+    el.btnRerun.classList.add("hidden");
+    return;
+  }
 
   const cached = await getSummary(currentUrl);
   if (cached && cached.summary) {
@@ -316,7 +357,7 @@ function viewHistoryItem(url) {
     el.pageTitle.textContent = cached.title || "(untitled)";
     el.pageMeta.textContent = [cached.siteName, url, cached.charCount ? cached.charCount + " chars" : ""]
       .filter(Boolean).join(" · ");
-    backgroundCurrentStream(); // don't cancel a running summary; keep it in bg
+    renderJobId = null; // stop painting; background jobs continue independently
     el.summary.innerHTML = DOMPurify.sanitize(parseMD(cached.summary));
     setStatus("From history");
     el.btnStop.classList.add("hidden");
@@ -328,9 +369,11 @@ function viewHistoryItem(url) {
 el.btnSummarize.addEventListener("click", summarizeCurrentPage);
 el.btnRerun.addEventListener("click", summarizeCurrentPage);
 el.btnStop.addEventListener("click", () => {
-  // Cancel the in-flight stream (the background aborts the fetch).
-  if (currentStream && currentStream.port) currentStream.port.postMessage({ cancel: true });
-  stopStream();
+  // Cancel the running/queued summary for the shown page in the background.
+  if (currentUrl) chrome.runtime.sendMessage({ type: "ENQUEUE_CANCEL", url: currentUrl });
+  renderJobId = null;
+  el.btnStop.classList.add("hidden");
+  setStatus("(stopped)");
 });
 el.btnSave.addEventListener("click", saveSettings);
 
@@ -348,11 +391,16 @@ el.historyList.addEventListener("click", async (ev) => {
   }
 });
 
-// React to tab switches so the panel always reflects the active page's
-// context (cached summary if one exists, else the default state).
+// Route background messages: tab/navigation changes refresh the panel's
+// context; SUMMARY_* / QUEUE_CHANGED drive the serial-queue pipeline.
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.type === "TAB_ACTIVATED") {
+  if (!msg || typeof msg !== "object") return;
+  if (msg.type === "TAB_ACTIVATED") {
     refreshForCurrentTab();
+  } else if (msg.type && msg.type.startsWith("SUMMARY_")) {
+    handleSummaryEvent(msg);
+  } else if (msg.type === "QUEUE_CHANGED") {
+    handleSummaryEvent(msg);
   }
 });
 

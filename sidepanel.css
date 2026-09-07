@@ -11,6 +11,7 @@ header h1 { font-size: 15px; margin: 0 0 10px; }
 #controls button:hover { background: #2563eb22; }
 .status { font-size: 12px; margin: 0 0 8px; min-height: 16px; }
 .status.error { color: #d33; }
+.queue-info { font-size: 11px; opacity: .65; margin: 0 0 8px; }
 .markdown { max-width: 100%; overflow-wrap: break-word; }
 .markdown h1, .markdown h2, .markdown h3 { font-size: 14px; margin: 12px 0 4px; }
 .markdown ul { margin: 4px 0 8px 18px; padding: 0; }
