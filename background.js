@@ -17,9 +17,12 @@ chrome.tabs.onActivated.addListener((info) => {
   chrome.runtime.sendMessage({ type: "TAB_ACTIVATED", tabId: info.tabId }).catch(() => {});
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  // A completed navigation to a different URL is a new page context.
-  if (changeInfo.status === "complete" && changeInfo.url) {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // A loaded navigation. Use the authoritative Tab object (3rd arg) so we
+  // get the current URL even though the URL-bearing event and the
+  // "complete" event are usually separate in changeInfo. Only refresh when
+  // the navigating tab is the one currently in front of the user.
+  if (changeInfo.status === "complete" && tab && tab.active && tab.url) {
     chrome.runtime.sendMessage({ type: "TAB_ACTIVATED", tabId }).catch(() => {});
   }
 });
