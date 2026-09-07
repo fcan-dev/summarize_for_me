@@ -11,10 +11,8 @@ const DEFAULTS = {
 // Categorical summary length -> max output tokens sent to the model.
 const MAX_LENGTH_TOKENS = { short: 512, medium: 1024, long: 2048 };
 
-let lastPage = null;
-let port = null;
-let accText = "";
 let currentUrl = null; // URL of the page the panel is currently showing
+let currentStream = null; // the in-flight/background summary stream, if any
 
 // Summary history. Stored in chrome.storage.local keyed by page URL so it
 // survives browser restarts. Each value: { url, title, siteName, charCount,
@@ -113,76 +111,106 @@ function escapeHtml(s) {
 }
 
 // --- pipeline ---
-// Cancel any in-flight stream and close its port, if one is open.
+// Fully cancel the in-flight stream and close its port (background aborts the
+// fetch via onDisconnect). Used by the Stop button and when starting a new
+// summary — NOT on tab switch, which only backgrounds the stream.
 function stopStream() {
-  if (port) {
-    const old = port;
-    port = null;
-    old.disconnect(); // background aborts the fetch via onDisconnect
+  const s = currentStream;
+  if (s && s.port) {
+    currentStream = null;
+    s.port.disconnect();
   }
 }
 
+// Keep the current stream running in the background: mark it backgrounded so
+// it stops painting to the panel, but leave the port open so the fetch
+// continues. Its result is still saved to the local DB on completion.
+function backgroundCurrentStream() {
+  if (currentStream) currentStream.backgrounded = true;
+}
+
 function startSummarize(page, settings) {
-  accText = "";
-  let reasoningCount = 0;
+  stopStream(); // cancel any prior stream so there's never two at once
+
+  // Bind this stream to its own page metadata + port so a tab switch (which
+  // changes currentUrl / the visible context) can't misattribute the saved
+  // summary, and a stale stream's disconnect can't kill a newer one.
+  const stream = {
+    url: (page && page.url) || currentUrl,
+    title: (page && page.title) || "",
+    siteName: (page && page.siteName) || "",
+    charCount: (page && page.charCount) || 0,
+    buffer: "",
+    backgrounded: false,
+    port: null,
+  };
+  currentStream = stream;
+  const isForeground = () => currentStream === stream && !stream.backgrounded;
+
   el.summary.innerHTML = "";
   el.btnStop.classList.remove("hidden");
   el.btnRerun.classList.add("hidden");
   setStatus("Summarizing…");
 
-  // Never run two streams at once: starting a new summary cancels any
-  // in-flight one first, so A then B don't break each other.
-  stopStream();
+  const p = chrome.runtime.connect({ name: "summarize" });
+  stream.port = p;
 
-  port = chrome.runtime.connect({ name: "summarize" });
-  port.onMessage.addListener((msg) => {
+  p.onMessage.addListener((msg) => {
     // Reasoning models (e.g. Qwen3) "think" first via delta.reasoning_content.
-    // Show live progress so the panel doesn't look stuck; the real answer is
-    // streamed below via `msg.token` once chain-of-thought finishes.
     if (msg.reasoning) {
-      reasoningCount += msg.reasoning.length;
-      if (el.summary.childElementCount === 0) setStatus(`Thinking… (${reasoningCount})`);
+      stream.reasoning = (stream.reasoning || 0) + msg.reasoning.length;
+      if (isForeground() && el.summary.childElementCount === 0) setStatus(`Thinking… (${stream.reasoning})`);
     } else if (msg.token) {
-      if (el.summary.childElementCount === 0) setStatus("Summarizing…");
-      accText += msg.token;
-      renderMarkdown(accText);
+      stream.buffer += msg.token;
+      if (isForeground()) {
+        if (el.summary.childElementCount === 0) setStatus("Summarizing…");
+        renderMarkdown(stream.buffer);
+      }
     } else if (msg.done) {
-      // Persist the finished summary keyed by the page URL (local db).
-      if (currentUrl && accText.trim()) {
-        saveSummary(currentUrl, {
-          url: currentUrl,
-          title: (lastPage && lastPage.title) || "",
-          siteName: (lastPage && lastPage.siteName) || "",
-          charCount: (lastPage && lastPage.charCount) || 0,
-          summary: accText,
+      // Persist the finished summary keyed by THIS stream's URL (local db),
+      // even if the stream ran in the background while another tab was shown.
+      if (stream.url && stream.buffer.trim()) {
+        saveSummary(stream.url, {
+          url: stream.url,
+          title: stream.title,
+          siteName: stream.siteName,
+          charCount: stream.charCount,
+          summary: stream.buffer,
           createdAt: Date.now(),
         });
         renderHistory();
       }
-      finalize("Done");
+      finishStream(stream, "Done");
     } else if (msg.stopped) {
-      finalize("(stopped)");
+      finishStream(stream, "(stopped)");
     } else if (msg.error) {
-      setStatus("Error: " + (msg.error.message || "unknown") + (msg.error.detail ? " — " + msg.error.detail : ""), "error");
-      finalize();
+      if (isForeground()) {
+        setStatus("Error: " + (msg.error.message || "unknown") + (msg.error.detail ? " — " + msg.error.detail : ""), "error");
+      }
+      finishStream(stream);
     }
   });
-  port.onDisconnect.addListener(() => finalize());
+  p.onDisconnect.addListener(() => finishStream(stream));
 
-  port.postMessage({
+  p.postMessage({
     baseUrl: settings.baseUrl, apiKey: settings.apiKey, model: settings.model,
     maxTokens: MAX_LENGTH_TOKENS[settings.maxLength] || MAX_LENGTH_TOKENS.medium,
     maxInputChars: settings.maxInputChars, page,
   });
 }
 
-function finalize(statusText) {
-  if (!port) return; // already cleaned up (e.g. by a tab-switch refresh)
-  port.disconnect();
-  port = null;
-  el.btnStop.classList.add("hidden");
-  el.btnRerun.classList.remove("hidden");
-  if (statusText && el.status.textContent === "Summarizing…") setStatus(statusText);
+// Clean up a stream. No-ops if it's no longer the current stream (e.g. it was
+// replaced or cancelled). Only touches the panel UI if it was foreground.
+function finishStream(stream, statusText) {
+  if (currentStream !== stream) return;
+  const wasForeground = !stream.backgrounded;
+  if (stream.port) { try { stream.port.disconnect(); } catch {} stream.port = null; }
+  currentStream = null;
+  if (wasForeground) {
+    el.btnStop.classList.add("hidden");
+    el.btnRerun.classList.remove("hidden");
+    if (statusText && el.status.textContent === "Summarizing…") setStatus(statusText);
+  }
 }
 
 async function runSummarize(page) {
@@ -191,7 +219,6 @@ async function runSummarize(page) {
     setStatus("Configure your endpoint in Settings first.", "error");
     return;
   }
-  lastPage = page;
   currentUrl = (page && page.url) || currentUrl;
   startSummarize(page, settings);
 }
@@ -236,7 +263,10 @@ async function refreshForCurrentTab() {
   el.pageTitle.textContent = tab.title || "(untitled)";
   el.pageMeta.textContent = [tab.url || ""].filter(Boolean).join(" · ");
 
-  stopStream(); // cancel any in-flight summary before switching context
+  // Keep any in-flight summary running in the background (do NOT cancel it)
+  // so it finishes and saves even after switching tabs; the panel now shows
+  // the newly active tab's context instead.
+  backgroundCurrentStream();
   el.btnStop.classList.add("hidden");
 
   const cached = await getSummary(currentUrl);
@@ -286,7 +316,7 @@ function viewHistoryItem(url) {
     el.pageTitle.textContent = cached.title || "(untitled)";
     el.pageMeta.textContent = [cached.siteName, url, cached.charCount ? cached.charCount + " chars" : ""]
       .filter(Boolean).join(" · ");
-    stopStream();
+    backgroundCurrentStream(); // don't cancel a running summary; keep it in bg
     el.summary.innerHTML = DOMPurify.sanitize(parseMD(cached.summary));
     setStatus("From history");
     el.btnStop.classList.add("hidden");
@@ -297,7 +327,11 @@ function viewHistoryItem(url) {
 // --- wiring ---
 el.btnSummarize.addEventListener("click", summarizeCurrentPage);
 el.btnRerun.addEventListener("click", summarizeCurrentPage);
-el.btnStop.addEventListener("click", () => { if (port) port.postMessage({ cancel: true }); });
+el.btnStop.addEventListener("click", () => {
+  // Cancel the in-flight stream (the background aborts the fetch).
+  if (currentStream && currentStream.port) currentStream.port.postMessage({ cancel: true });
+  stopStream();
+});
 el.btnSave.addEventListener("click", saveSettings);
 
 // Populate history when it is opened (and refresh on click within it).
