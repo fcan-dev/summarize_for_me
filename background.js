@@ -106,9 +106,10 @@ chrome.runtime.onConnect.addListener((port) => {
         const parsed = extractDataPayloads(rest);
         rest = parsed.rest;
         for (const p of parsed.payloads) {
-          const { done: isDone, token } = tokenFromPayload(p);
+          const { done: isDone, token, reasoning } = tokenFromPayload(p);
           if (isDone) { port.postMessage({ done: true }); return; }
           if (token) port.postMessage({ token });
+          if (reasoning) port.postMessage({ reasoning });
         }
       }
       port.postMessage({ done: true });

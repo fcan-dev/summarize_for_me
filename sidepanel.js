@@ -1,7 +1,7 @@
 // sidepanel.js — UI: settings, pipeline trigger, streaming markdown render (classic script).
 
 const DEFAULTS = {
-  baseUrl: "http://<redacted-lan-ip>:8090/v1",
+  baseUrl: "http://<redacted-ip>:8090/v1",
   apiKey: "local",
   model: "qwen3.8-27b",
   maxLength: "medium",
@@ -76,6 +76,7 @@ function renderMarkdown(md) {
 // --- pipeline ---
 function startSummarize(page, settings) {
   accText = "";
+  let reasoningCount = 0;
   el.summary.innerHTML = "";
   el.btnStop.classList.remove("hidden");
   el.btnRerun.classList.add("hidden");
@@ -83,7 +84,14 @@ function startSummarize(page, settings) {
 
   port = chrome.runtime.connect({ name: "summarize" });
   port.onMessage.addListener((msg) => {
-    if (msg.token) {
+    // Reasoning models (e.g. Qwen3) "think" first via delta.reasoning_content.
+    // Show live progress so the panel doesn't look stuck; the real answer is
+    // streamed below via `msg.token` once chain-of-thought finishes.
+    if (msg.reasoning) {
+      reasoningCount += msg.reasoning.length;
+      if (el.summary.childElementCount === 0) setStatus(`Thinking… (${reasoningCount})`);
+    } else if (msg.token) {
+      if (el.summary.childElementCount === 0) setStatus("Summarizing…");
       accText += msg.token;
       renderMarkdown(accText);
     } else if (msg.done) {

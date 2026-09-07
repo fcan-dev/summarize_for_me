@@ -19,7 +19,7 @@ left. It uses an OpenAI-compatible chat-completions endpoint (default: a local
 
 ## Configure the endpoint
 Open the side panel → **Settings**. Defaults:
-- Base URL: `http://<redacted-lan-ip>:8090/v1`
+- Base URL: `http://<redacted-ip>:8090/v1`
 - API key: `local`
 - Model: `qwen3.8-27b`
 
