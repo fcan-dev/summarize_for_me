@@ -65,7 +65,6 @@ chrome.runtime.onConnect.addListener((port) => {
           model: req.model,
           messages,
           max_tokens: req.maxTokens,
-          temperature: req.temperature,
           stream: true,
         }),
         signal: abortController.signal,
