@@ -4,10 +4,12 @@ const DEFAULTS = {
   baseUrl: "http://<redacted-lan-ip>:8090/v1",
   apiKey: "local",
   model: "qwen3.8-27b",
-  maxTokens: 2048,
-  temperature: 0.3,
+  maxLength: "medium",
   maxInputChars: 100000,
 };
+
+// Categorical summary length -> max output tokens sent to the model.
+const MAX_LENGTH_TOKENS = { short: 512, medium: 1024, long: 2048 };
 
 let lastPage = null;
 let port = null;
@@ -19,7 +21,7 @@ const el = {
   btnSummarize: $("btn-summarize"), btnRerun: $("btn-rerun"), btnStop: $("btn-stop"),
   status: $("status"), summary: $("summary"),
   setBaseUrl: $("set-baseurl"), setApiKey: $("set-apikey"), setModel: $("set-model"),
-  setMaxTokens: $("set-maxtokens"), setTemperature: $("set-temperature"),
+  setMaxLength: $("set-maxlength"),
   btnSave: $("btn-save"), saveNote: $("save-note"),
 };
 
@@ -42,16 +44,14 @@ function fillSettings(s) {
   el.setBaseUrl.value = s.baseUrl;
   el.setApiKey.value = s.apiKey;
   el.setModel.value = s.model;
-  el.setMaxTokens.value = s.maxTokens;
-  el.setTemperature.value = s.temperature;
+  el.setMaxLength.value = s.maxLength || DEFAULTS.maxLength;
 }
 async function saveSettings() {
   await storageSet({
     baseUrl: el.setBaseUrl.value.trim(),
     apiKey: el.setApiKey.value.trim(),
     model: el.setModel.value.trim(),
-    maxTokens: parseInt(el.setMaxTokens.value, 10) || DEFAULTS.maxTokens,
-    temperature: parseFloat(el.setTemperature.value) || 0,
+    maxLength: el.setMaxLength.value || DEFAULTS.maxLength,
   });
   el.saveNote.classList.remove("hidden");
   setTimeout(() => el.saveNote.classList.add("hidden"), 1500);
@@ -99,7 +99,7 @@ function startSummarize(page, settings) {
 
   port.postMessage({
     baseUrl: settings.baseUrl, apiKey: settings.apiKey, model: settings.model,
-    maxTokens: settings.maxTokens, temperature: settings.temperature,
+    maxTokens: MAX_LENGTH_TOKENS[settings.maxLength] || MAX_LENGTH_TOKENS.medium,
     maxInputChars: settings.maxInputChars, page,
   });
 }
@@ -155,6 +155,6 @@ el.btnSave.addEventListener("click", saveSettings);
 
 (async function init() {
   fillSettings(await loadSettings());
-  // Auto-summarize the page that opened the panel (the icon click).
-  await summarizeCurrentPage();
+  // Load settings but do NOT auto-summarize. The user clicks
+  // "Summarize current page" explicitly.
 })();
