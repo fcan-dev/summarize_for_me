@@ -19,7 +19,7 @@ left. It uses an OpenAI-compatible chat-completions endpoint (default: a local
 
 ## Configure the endpoint
 Open the side panel → **Settings**. Defaults:
-- Base URL: `http://192.168.1.8:8090/v1`
+- Base URL: `http://100.113.25.103:8090/v1`
 - API key: `local`
 - Model: `qwen3.8-27b`
 

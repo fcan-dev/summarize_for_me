@@ -26,7 +26,7 @@ test("tokenFromPayload returns the content token", () => {
 });
 
 test("tokenFromPayload handles [DONE]", () => {
-  assert.deepEqual(tokenFromPayload("[DONE]"), { done: true, token: "" });
+  assert.deepEqual(tokenFromPayload("[DONE]"), { done: true, token: "", reasoning: "" });
 });
 
 test("tokenFromPayload returns empty when delta.content is absent", () => {
@@ -39,4 +39,21 @@ test("tokenFromPayload returns empty for malformed JSON", () => {
   const { done, token } = tokenFromPayload("not json");
   assert.equal(done, false);
   assert.equal(token, "");
+});
+
+test("tokenFromPayload surfaces reasoning_content separately for reasoning models", () => {
+  const { done, token, reasoning } = tokenFromPayload(
+    '{"choices":[{"delta":{"reasoning_content":"The user"}}]}'
+  );
+  assert.equal(done, false);
+  assert.equal(token, "");
+  assert.equal(reasoning, "The user");
+});
+
+test("tokenFromPayload returns content when present alongside reasoning", () => {
+  const { token, reasoning } = tokenFromPayload(
+    '{"choices":[{"delta":{"reasoning_content":"...","content":"Hello"}}]}'
+  );
+  assert.equal(token, "Hello");
+  assert.equal(reasoning, "...");
 });
