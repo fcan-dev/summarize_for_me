@@ -51,6 +51,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== "summarize") return;
 
+  // Post to the port without throwing if the panel already disconnected it
+  // (e.g. a new summary started, the panel closed, or the user switched away
+  // and the panel cleaned up). A disconnected port must not crash the worker.
+  const safePost = (msg) => {
+    try { port.postMessage(msg); } catch { /* port is gone; nothing to do */ }
+  };
+
   let abortController = null;
 
   port.onMessage.addListener(async (req) => {
@@ -59,7 +66,7 @@ chrome.runtime.onConnect.addListener((port) => {
       return;
     }
     if (!req || !req.baseUrl) {
-      port.postMessage({ error: { message: "Missing baseUrl" } });
+      safePost({ error: { message: "Missing baseUrl" } });
       return;
     }
 
@@ -84,7 +91,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
       if (!res.ok) {
         const body = await res.text().catch(() => "");
-        port.postMessage({ error: { message: `HTTP ${res.status}`, detail: body.slice(0, 500) } });
+        safePost({ error: { message: `HTTP ${res.status}`, detail: body.slice(0, 500) } });
         return;
       }
 
@@ -99,15 +106,15 @@ chrome.runtime.onConnect.addListener((port) => {
         rest = parsed.rest;
         for (const p of parsed.payloads) {
           const { done: isDone, token, reasoning } = tokenFromPayload(p);
-          if (isDone) { port.postMessage({ done: true }); return; }
-          if (token) port.postMessage({ token });
-          if (reasoning) port.postMessage({ reasoning });
+          if (isDone) { safePost({ done: true }); return; }
+          if (token) safePost({ token });
+          if (reasoning) safePost({ reasoning });
         }
       }
-      port.postMessage({ done: true });
+      safePost({ done: true });
     } catch (e) {
-      if (e && e.name === "AbortError") { port.postMessage({ stopped: true }); return; }
-      port.postMessage({ error: { message: (e && e.message) || "Network error" } });
+      if (e && e.name === "AbortError") { safePost({ stopped: true }); return; }
+      safePost({ error: { message: (e && e.message) || "Network error" } });
     }
   });
 
