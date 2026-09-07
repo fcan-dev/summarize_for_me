@@ -1,5 +1,41 @@
 <!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><link rel="stylesheet" href="sidepanel.css"></head>
-<body><p>Page Summarizer</p></body>
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <header>
+    <h1>Page Summarizer</h1>
+  </header>
+
+  <section id="page-info" class="hidden">
+    <div id="page-title"></div>
+    <div id="page-meta"></div>
+  </section>
+
+  <section id="controls">
+    <button id="btn-summarize">Summarize current page</button>
+    <button id="btn-rerun" class="hidden">Re-summarize</button>
+    <button id="btn-stop" class="hidden">Stop</button>
+  </section>
+
+  <section id="status" class="status"></section>
+  <section id="summary" class="markdown"></section>
+
+  <details id="settings">
+    <summary>Settings</summary>
+    <label>Base URL <input id="set-baseurl" type="text" /></label>
+    <label>API key <input id="set-apikey" type="password" /></label>
+    <label>Model <input id="set-model" type="text" /></label>
+    <label>Max output tokens <input id="set-maxtokens" type="number" min="1" /></label>
+    <label>Temperature <input id="set-temperature" type="number" step="0.1" min="0" max="2" /></label>
+    <button id="btn-save">Save settings</button>
+    <span id="save-note" class="hidden">Saved.</span>
+  </details>
+
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/DOMPurify.min.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
 </html>

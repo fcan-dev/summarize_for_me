@@ -1,1 +1,23 @@
-/* side panel styles. Implemented in Task 6. */
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 12px; }
+header h1 { font-size: 15px; margin: 0 0 10px; }
+.hidden { display: none !important; }
+#page-info { border-left: 3px solid #2563eb; padding: 4px 8px; margin-bottom: 10px; }
+#page-title { font-weight: 600; }
+#page-meta { font-size: 12px; opacity: .7; word-break: break-all; }
+#controls { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+#controls button { padding: 6px 10px; border: 1px solid #8884; background: transparent; border-radius: 6px; cursor: pointer; }
+#controls button:hover { background: #2563eb22; }
+.status { font-size: 12px; margin: 0 0 8px; min-height: 16px; }
+.status.error { color: #d33; }
+.markdown { max-width: 100%; overflow-wrap: break-word; }
+.markdown h1, .markdown h2, .markdown h3 { font-size: 14px; margin: 12px 0 4px; }
+.markdown ul { margin: 4px 0 8px 18px; padding: 0; }
+.markdown p { margin: 6px 0; }
+details { margin-top: 14px; border-top: 1px solid #8883; padding-top: 8px; }
+details summary { cursor: pointer; font-weight: 600; }
+details label { display: block; margin: 6px 0; font-size: 13px; }
+details input { display: block; width: 100%; margin-top: 2px; padding: 5px; border: 1px solid #8885; border-radius: 5px; }
+#btn-save { margin-top: 6px; }
+#save-note { font-size: 12px; opacity: .7; margin-left: 8px; }
