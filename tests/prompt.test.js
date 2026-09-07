@@ -41,3 +41,7 @@ test("SYSTEM_PROMPT requests grounding and the three-part structure", () => {
   assert.match(SYSTEM_PROMPT, /Takeaway/);
   assert.match(SYSTEM_PROMPT, /quote/i);
 });
+
+test("SYSTEM_PROMPT requires replying in the same language as the article", () => {
+  assert.match(SYSTEM_PROMPT, /same language/);
+});
