@@ -6,12 +6,16 @@
 </head>
 <body>
   <header>
+    <img id="app-icon" src="icons/16.png" alt="" width="18" height="18" />
     <h1>Page Summarizer</h1>
   </header>
 
   <section id="page-info" class="hidden">
-    <div id="page-title"></div>
-    <div id="page-meta"></div>
+    <span id="page-favicon" class="page-favicon" aria-hidden="true"></span>
+    <div class="page-body">
+      <div id="page-title"></div>
+      <div id="page-meta"></div>
+    </div>
   </section>
 
   <section id="controls">
@@ -20,8 +24,12 @@
     <button id="btn-stop" class="hidden">Stop</button>
   </section>
 
-  <section id="status" class="status"></section>
+  <section id="status" class="status" aria-live="polite"></section>
   <div id="queue-info" class="queue-info hidden"></div>
+  <div id="empty-state" class="empty-state hidden">
+    <div class="empty-title">No summary yet</div>
+    <div>Summarize the current page to get started.</div>
+  </div>
   <section id="summary" class="markdown"></section>
 
   <details id="history">
@@ -31,12 +39,30 @@
 
   <details id="settings">
     <summary>Settings</summary>
-    <label>Base URL <input id="set-baseurl" type="text" /></label>
-    <label>API key <input id="set-apikey" type="password" /></label>
-    <label>Model <input id="set-model" type="text" /></label>
-    <label>Summary length <select id="set-maxlength"><option value="short">Short</option><option value="medium">Medium</option><option value="long">Long</option></select></label>
-    <button id="btn-save">Save settings</button>
-    <span id="save-note" class="hidden">Saved.</span>
+    <div class="field">
+      <label for="set-baseurl">Base URL</label>
+      <input id="set-baseurl" type="text" spellcheck="false" />
+    </div>
+    <div class="field">
+      <label for="set-apikey">API key</label>
+      <input id="set-apikey" type="password" spellcheck="false" />
+    </div>
+    <div class="field">
+      <label for="set-model">Model</label>
+      <input id="set-model" type="text" spellcheck="false" />
+    </div>
+    <div class="field">
+      <label for="set-maxlength">Summary length</label>
+      <select id="set-maxlength">
+        <option value="short">Short</option>
+        <option value="medium">Medium</option>
+        <option value="long">Long</option>
+      </select>
+    </div>
+    <div class="save-row">
+      <button id="btn-save">Save settings</button>
+      <span id="save-note" class="hidden">Saved.</span>
+    </div>
   </details>
 
   <script src="vendor/marked.min.js"></script>
