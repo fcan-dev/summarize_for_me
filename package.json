@@ -14,7 +14,7 @@
     "side-panel"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "test": "node --test \"tests/**/*.test.js\""
