@@ -48,8 +48,10 @@ async function deleteSummary(url) {
 const $ = (id) => document.getElementById(id);
 const el = {
   pageInfo: $("page-info"), pageTitle: $("page-title"), pageMeta: $("page-meta"),
+  pageFavicon: $("page-favicon"),
   btnSummarize: $("btn-summarize"), btnRerun: $("btn-rerun"), btnStop: $("btn-stop"),
   status: $("status"), summary: $("summary"), queueInfo: $("queue-info"),
+  emptyState: $("empty-state"),
   setBaseUrl: $("set-baseurl"), setApiKey: $("set-apikey"), setModel: $("set-model"),
   setMaxLength: $("set-maxlength"),
   btnSave: $("btn-save"), saveNote: $("save-note"),
@@ -98,10 +100,30 @@ function showPage(p) {
   el.pageTitle.textContent = p.title || "(untitled)";
   el.pageMeta.textContent = [p.siteName, p.url, p.charCount ? p.charCount + " chars" : ""]
     .filter(Boolean).join(" · ");
+  setFavicon(p.url);
+}
+
+// First letter of the page's hostname, shown as a monogram chip.
+function setFavicon(url) {
+  let initial = "?";
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    if (host) initial = host[0].toUpperCase();
+  } catch { /* non-http url or empty */ }
+  el.pageFavicon.textContent = initial;
+}
+
+// Show the empty-state placeholder only when the summary area is empty
+// and no job is being painted in the panel.
+function syncEmptyState() {
+  const hasContent = el.summary.childElementCount > 0;
+  const streaming = renderJobId !== null;
+  el.emptyState.classList.toggle("hidden", hasContent || streaming);
 }
 const parseMD = (s) => (typeof marked.parse === "function" ? marked.parse(s) : marked(s));
 function renderMarkdown(md) {
   el.summary.innerHTML = DOMPurify.sanitize(parseMD(md || ""));
+  syncEmptyState();
 }
 function escapeHtml(s) {
   return String(s == null ? "" : s)
@@ -157,9 +179,10 @@ async function runSummarize(page) {
   currentUrl = (page && page.url) || currentUrl;
 
   el.summary.innerHTML = "";
+  el.emptyState.classList.add("hidden");
   el.btnStop.classList.remove("hidden");
   el.btnRerun.classList.add("hidden");
-  setStatus("Queuing…");
+  setStatus("Queuing…", "live");
 
   const res = await new Promise((resolve) =>
     chrome.runtime.sendMessage({ type: "ENQUEUE", page, settings }, resolve)
@@ -168,7 +191,7 @@ async function runSummarize(page) {
     jobFor(res.id, page); // start buffering this job
     renderJobId = res.id; // and paint it (it's the current view's summary)
   }
-  setStatus("Summarizing…");
+  setStatus("Summarizing…", "live");
 }
 
 // Handle a summary-progress event broadcast by the background worker.
@@ -185,14 +208,14 @@ function handleSummaryEvent(msg) {
 
   if (msg.type === "SUMMARY_STARTED") {
     jobFor(id, msg.page);
-    if (isForeground(id)) setStatus("Summarizing…");
+    if (isForeground(id)) setStatus("Summarizing…", "live");
     return;
   }
 
   if (msg.type === "SUMMARY_REASONING") {
     const j = jobFor(id, msg.page);
     j.reasoning += (msg.reasoning || "").length;
-    if (isForeground(id) && el.summary.childElementCount === 0) setStatus(`Thinking… (${j.reasoning})`);
+    if (isForeground(id) && el.summary.childElementCount === 0) setStatus(`Thinking… (${j.reasoning})`, "live");
     return;
   }
 
@@ -200,7 +223,7 @@ function handleSummaryEvent(msg) {
     const j = jobFor(id, msg.page);
     j.buffer += msg.token || "";
     if (isForeground(id)) {
-      if (el.summary.childElementCount === 0) setStatus("Summarizing…");
+      if (el.summary.childElementCount === 0) setStatus("Summarizing…", "live");
       renderMarkdown(j.buffer);
     }
     return;
@@ -247,6 +270,7 @@ function finishForeground(statusText) {
   el.btnStop.classList.add("hidden");
   el.btnRerun.classList.remove("hidden");
   if (statusText && el.status.textContent === "Summarizing…") setStatus(statusText);
+  syncEmptyState();
 }
 
 // --- extraction via background ---
@@ -288,6 +312,7 @@ async function refreshForCurrentTab() {
   el.pageInfo.classList.remove("hidden");
   el.pageTitle.textContent = tab.title || "(untitled)";
   el.pageMeta.textContent = [tab.url || ""].filter(Boolean).join(" · ");
+  setFavicon(tab.url);
 
   // Stop painting the previous foreground job in the panel; background jobs
   // (in the worker queue) continue independently and save on completion.
@@ -304,7 +329,8 @@ async function refreshForCurrentTab() {
   if (runningForThisPage) {
     renderJobId = runningForThisPage.jid;
     if (runningForThisPage.j.buffer.trim()) renderMarkdown(runningForThisPage.j.buffer);
-    setStatus("Summarizing…");
+    else syncEmptyState();
+    setStatus("Summarizing…", "live");
     el.btnStop.classList.remove("hidden");
     el.btnRerun.classList.add("hidden");
     return;
@@ -315,10 +341,12 @@ async function refreshForCurrentTab() {
     el.summary.innerHTML = DOMPurify.sanitize(parseMD(cached.summary));
     setStatus("Loaded from history");
     el.btnRerun.classList.remove("hidden");
+    syncEmptyState();
   } else {
     el.summary.innerHTML = "";
     setStatus("");
     el.btnRerun.classList.add("hidden");
+    syncEmptyState();
   }
 }
 
@@ -357,11 +385,13 @@ function viewHistoryItem(url) {
     el.pageTitle.textContent = cached.title || "(untitled)";
     el.pageMeta.textContent = [cached.siteName, url, cached.charCount ? cached.charCount + " chars" : ""]
       .filter(Boolean).join(" · ");
+    setFavicon(url);
     renderJobId = null; // stop painting; background jobs continue independently
     el.summary.innerHTML = DOMPurify.sanitize(parseMD(cached.summary));
     setStatus("From history");
     el.btnStop.classList.add("hidden");
     el.btnRerun.classList.remove("hidden");
+    syncEmptyState();
   });
 }
 
