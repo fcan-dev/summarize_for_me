@@ -3,6 +3,19 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "description": "Chrome extension that summarizes the open page in one click and streams the result into the side panel. Works with any OpenAI-compatible endpoint.",
+  "license": "MIT",
+  "keywords": [
+    "chrome-extension",
+    "manifest-v3",
+    "summarization",
+    "llm",
+    "readability",
+    "side-panel"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "test": "node --test \"tests/**/*.test.js\""
   }

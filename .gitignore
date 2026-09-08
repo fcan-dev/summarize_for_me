@@ -1,6 +1,9 @@
 node_modules/
 *.log
 .DS_Store
+.env
+*.crx
+*.zip
 
 # agent skill installs (dev tooling, not part of the extension)
 .agents/

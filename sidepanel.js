@@ -1,9 +1,11 @@
 // sidepanel.js — UI: settings, pipeline trigger, streaming markdown render (classic script).
 
 const DEFAULTS = {
-  baseUrl: "http://<redacted-ip>:8090/v1",
+  // Point these at any OpenAI-compatible server (vLLM, llama.cpp, Ollama, ...).
+  // Adjust in Settings once your endpoint is running.
+  baseUrl: "http://localhost:8000/v1",
   apiKey: "local",
-  model: "qwen3.8-27b",
+  model: "your-model",
   maxLength: "medium",
   maxInputChars: 100000,
 };
