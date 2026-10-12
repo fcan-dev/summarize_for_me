@@ -1,19 +1,11 @@
-// sidepanel.js — UI: settings, pipeline trigger, streaming markdown render (classic script).
-
-const DEFAULTS = {
-  // Point these at any OpenAI-compatible server (vLLM, llama.cpp, Ollama, ...).
-  // Adjust in Settings once your endpoint is running.
-  baseUrl: "http://localhost:8000/v1",
-  apiKey: "local",
-  model: "your-model",
-  maxLength: "medium",
-  maxInputChars: 100000,
-};
-
-// Categorical summary length -> max output tokens sent to the model.
-const MAX_LENGTH_TOKENS = { short: 512, medium: 1024, long: 2048 };
+// sidepanel.js — UI: settings, endpoint switcher, pipeline trigger, streaming markdown render (module).
+import { DEFAULTS, ENDPOINT_IDS, activeEndpoint, endpointLabel, maxTokensForLength, migrateSettings } from "./lib/settings.js";
+import { buildChatMessages } from "./lib/prompt.js";
+import { withChatTurn, clearChat } from "./lib/chat.js";
+import { extractDataPayloads, tokenFromPayload } from "./lib/sse.js";
 
 let currentUrl = null; // URL of the page the panel is currently showing
+let settings = null; // merged settings: two endpoints + which one is active
 
 // Summary history. Stored in chrome.storage.local keyed by page URL so it
 // survives browser restarts. Each value: { url, title, siteName, charCount,
@@ -54,42 +46,62 @@ const el = {
   btnSummarize: $("btn-summarize"), btnRerun: $("btn-rerun"), btnStop: $("btn-stop"),
   status: $("status"), summary: $("summary"), queueInfo: $("queue-info"),
   emptyState: $("empty-state"),
-  setBaseUrl: $("set-baseurl"), setApiKey: $("set-apikey"), setModel: $("set-model"),
+  epBtn1: $("ep-btn-1"), epBtn2: $("ep-btn-2"),
+  setBaseUrl1: $("set-baseurl-1"), setApiKey1: $("set-apikey-1"), setModel1: $("set-model-1"),
+  setBaseUrl2: $("set-baseurl-2"), setApiKey2: $("set-apikey-2"), setModel2: $("set-model-2"),
   setMaxLength: $("set-maxlength"),
   btnSave: $("btn-save"), saveNote: $("save-note"),
   history: $("history"), historyList: $("history-list"),
+  chat: $("chat"), chatMessages: $("chat-messages"),
+  chatInput: $("chat-input"), btnChatSend: $("btn-chat-send"), btnChatNew: $("btn-chat-new"),
 };
 
-// --- storage (sync with local fallback) ---
-async function storageGet(keys) {
-  try { return await chrome.storage.sync.get(keys); }
-  catch { return await chrome.storage.local.get(keys); }
-}
-async function storageSet(obj) {
-  try { return await chrome.storage.sync.set(obj); }
-  catch { return await chrome.storage.local.set(obj); }
-}
+// --- storage (chrome.storage.local only — settings never leave this browser) ---
 async function loadSettings() {
-  const stored = await storageGet(Object.keys(DEFAULTS));
-  return Object.assign({}, DEFAULTS, stored);
+  const stored = await chrome.storage.local.get(["endpoints", "activeEndpoint", "maxLength", "maxInputChars"]);
+  return migrateSettings(stored);
 }
 
 // --- settings UI ---
 function fillSettings(s) {
-  el.setBaseUrl.value = s.baseUrl;
-  el.setApiKey.value = s.apiKey;
-  el.setModel.value = s.model;
+  for (const id of ENDPOINT_IDS) {
+    el["setBaseUrl" + id].value = s.endpoints[id].baseUrl;
+    el["setApiKey" + id].value = s.endpoints[id].apiKey;
+    el["setModel" + id].value = s.endpoints[id].model;
+  }
   el.setMaxLength.value = s.maxLength || DEFAULTS.maxLength;
 }
 async function saveSettings() {
-  await storageSet({
-    baseUrl: el.setBaseUrl.value.trim(),
-    apiKey: el.setApiKey.value.trim(),
-    model: el.setModel.value.trim(),
+  const endpoints = {};
+  for (const id of ENDPOINT_IDS) {
+    endpoints[id] = {
+      baseUrl: el["setBaseUrl" + id].value.trim(),
+      apiKey: el["setApiKey" + id].value.trim(),
+      model: el["setModel" + id].value.trim(),
+    };
+  }
+  await chrome.storage.local.set({
+    endpoints,
     maxLength: el.setMaxLength.value || DEFAULTS.maxLength,
   });
+  settings = await loadSettings();
   el.saveNote.classList.remove("hidden");
   setTimeout(() => el.saveNote.classList.add("hidden"), 1500);
+}
+
+// --- endpoint switcher ---
+// Persists immediately (no Save button): the switch is a per-run choice, not
+// part of the endpoint configuration.
+function renderEndpointSwitch() {
+  for (const id of ENDPOINT_IDS) {
+    el["epBtn" + id].setAttribute("aria-pressed", String(settings.activeEndpoint === id));
+  }
+}
+async function selectEndpoint(id) {
+  if (!settings || !ENDPOINT_IDS.includes(id) || settings.activeEndpoint === id) return;
+  settings.activeEndpoint = id;
+  await chrome.storage.local.set({ activeEndpoint: id });
+  renderEndpointSwitch();
 }
 
 // --- helpers ---
@@ -173,21 +185,32 @@ function jobFor(id, page) {
 }
 
 async function runSummarize(page) {
-  const settings = await loadSettings();
-  if (!settings.baseUrl || !settings.model) {
-    setStatus("Configure your endpoint in Settings first.", "error");
+  const ep = activeEndpoint(settings);
+  if (!ep) {
+    setStatus(`Configure ${endpointLabel(settings.activeEndpoint)} in Settings first.`, "error");
     return;
   }
   currentUrl = (page && page.url) || currentUrl;
 
+  resetChat(); // the summary area is about to be cleared
   el.summary.innerHTML = "";
   el.emptyState.classList.add("hidden");
   el.btnStop.classList.remove("hidden");
   el.btnRerun.classList.add("hidden");
   setStatus("Queuing…", "live");
 
+  // The job carries a snapshot of the selected endpoint and the resolved
+  // token cap: switching the switch or the length mid-queue does not
+  // redirect in-flight or queued jobs.
   const res = await new Promise((resolve) =>
-    chrome.runtime.sendMessage({ type: "ENQUEUE", page, settings }, resolve)
+    chrome.runtime.sendMessage(
+      {
+        type: "ENQUEUE",
+        page,
+        settings: { endpoint: ep, maxInputChars: settings.maxInputChars, maxTokens: maxTokensForLength(settings.maxLength) },
+      },
+      resolve
+    )
   );
   if (res && res.id != null) {
     jobFor(res.id, page); // start buffering this job
@@ -197,7 +220,7 @@ async function runSummarize(page) {
 }
 
 // Handle a summary-progress event broadcast by the background worker.
-function handleSummaryEvent(msg) {
+async function handleSummaryEvent(msg) {
   if (!msg || typeof msg !== "object") return;
   const id = msg.id;
 
@@ -234,19 +257,26 @@ function handleSummaryEvent(msg) {
   if (msg.type === "SUMMARY_DONE") {
     // Persist from the buffered job (works for background jobs too).
     const j = jobs.get(id);
+    const fg = isForeground(id);
     if (j && j.page.url && j.buffer.trim()) {
-      saveSummary(j.page.url, {
+      const prev = await getSummary(j.page.url);
+      const record = {
         url: j.page.url,
         title: j.page.title || "",
         siteName: j.page.siteName || "",
         charCount: j.page.charCount || 0,
         summary: j.buffer,
+        text: j.page.text || "", // stored so later chat can ground answers in the full page
         createdAt: Date.now(),
-      });
+      };
+      // A re-summary must not wipe an existing conversation for the page.
+      if (prev && Array.isArray(prev.chat) && prev.chat.length) record.chat = prev.chat;
+      saveSummary(record.url, record);
       renderHistory();
+      if (fg) { finishForeground("Done"); showChat(record); }
     }
     jobs.delete(id);
-    if (isForeground(id)) finishForeground("Done");
+    if (fg) finishForeground("Done");
     return;
   }
 
@@ -273,6 +303,179 @@ function finishForeground(statusText) {
   el.btnRerun.classList.remove("hidden");
   if (statusText && el.status.textContent === "Summarizing…") setStatus(statusText);
   syncEmptyState();
+}
+
+// --- chat (ask about the page) ---
+// The conversation is persisted per page inside the summary record
+// (record.chat); this state only tracks the currently shown page and the
+// in-flight turn, if any.
+const chat = {
+  url: null, // page whose conversation is shown
+  busy: false, // a turn is streaming
+  buffer: "", // current answer buffer
+  reasoning: 0, // reasoning chars seen this turn (for the “Thinking…” state)
+  controller: null, // AbortController of the in-flight request
+};
+
+function hideChat() {
+  el.chat.classList.add("hidden");
+  el.chatMessages.innerHTML = "";
+}
+
+// Abort the in-flight turn (if any) and clear the transient chat state.
+function clearChatState() {
+  if (chat.controller) {
+    chat.controller.abort();
+    chat.controller = null;
+  }
+  chat.busy = false;
+  chat.buffer = "";
+  chat.reasoning = 0;
+  syncChatButtons();
+}
+
+// Switch the shown page: abort any in-flight turn and hide the chat.
+function resetChat() {
+  clearChatState();
+  chat.url = null;
+  hideChat();
+}
+
+function syncChatButtons() {
+  el.btnChatSend.disabled = chat.busy;
+  el.chatInput.disabled = chat.busy;
+}
+
+// Render one Q&A bubble pair into the message list.
+function appendTurnDom(question, answer, streaming) {
+  const wrap = document.createElement("div");
+  wrap.className = "chat-turn";
+  const q = document.createElement("div");
+  q.className = "chat-q";
+  q.textContent = question;
+  const a = document.createElement("div");
+  a.className = "chat-a markdown" + (streaming ? " streaming" : "");
+  a.innerHTML = streaming
+    ? '<span class="chat-thinking">Thinking…</span>'
+    : DOMPurify.sanitize(parseMD(answer || ""));
+  wrap.append(q, a);
+  el.chatMessages.appendChild(wrap);
+  return { wrap, a };
+}
+
+// Show the chat for a stored record: render its conversation (if any) and
+// make the input ready.
+function showChat(record) {
+  clearChatState();
+  chat.url = record.url;
+  el.chatMessages.innerHTML = "";
+  for (const t of Array.isArray(record.chat) ? record.chat : []) {
+    appendTurnDom(t.q || "", t.a || "", false);
+  }
+  el.chat.classList.remove("hidden");
+  syncChatButtons();
+}
+
+async function sendChat() {
+  if (chat.busy || !chat.url) return;
+  const question = el.chatInput.value.trim();
+  if (!question) return;
+
+  const ep = activeEndpoint(settings);
+  if (!ep) {
+    return setStatus(`Configure ${endpointLabel(settings.activeEndpoint)} in Settings first.`, "error");
+  }
+  const record = await getSummary(chat.url);
+  if (!record || !record.summary || record.url !== chat.url) return;
+
+  const controller = new AbortController();
+  chat.busy = true;
+  chat.buffer = "";
+  chat.reasoning = 0;
+  chat.controller = controller;
+  syncChatButtons();
+  el.chatInput.value = "";
+
+  const { wrap, a } = appendTurnDom(question, "", true);
+
+  const messages = buildChatMessages(
+    { title: record.title || "", siteName: record.siteName || "", url: record.url, text: record.text || "" },
+    record.summary,
+    Array.isArray(record.chat) ? record.chat : [],
+    question,
+    settings.maxInputChars,
+  );
+
+  try {
+    const res = await fetch(`${String(ep.baseUrl).replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${ep.apiKey}`,
+      },
+      body: JSON.stringify({ model: ep.model, messages, stream: true }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}${body ? " — " + body.slice(0, 300) : ""}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let rest = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      rest += decoder.decode(value, { stream: true });
+      const parsed = extractDataPayloads(rest);
+      rest = parsed.rest;
+      for (const p of parsed.payloads) {
+        const { done: isDone, token, reasoning } = tokenFromPayload(p);
+        if (isDone) break;
+        if (token) {
+          chat.buffer += token;
+          a.innerHTML = DOMPurify.sanitize(parseMD(chat.buffer));
+        } else if (reasoning) {
+          chat.reasoning += reasoning.length;
+          if (!chat.buffer) a.innerHTML = `<span class="chat-thinking">Thinking… (${chat.reasoning})</span>`;
+        }
+      }
+    }
+    // Persist the completed turn (withChatTurn preserves text/summary).
+    const updated = withChatTurn(record, question, chat.buffer.trim(), Date.now());
+    await saveSummary(updated.url, updated);
+    a.classList.remove("streaming");
+    if (!chat.buffer.trim()) a.innerHTML = '<span class="chat-thinking">(no answer received)</span>';
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      // Page switched / new chat: drop the in-flight turn entirely.
+      wrap.remove();
+    } else {
+      a.classList.remove("streaming");
+      a.innerHTML = `<span class="chat-error">${escapeHtml((e && e.message) || "Request failed")}</span>`;
+    }
+  } finally {
+    // Only reset if this turn is still the current one (a newer turn or a
+    // page switch may already have superseded it).
+    if (chat.controller === controller) {
+      chat.controller = null;
+      chat.busy = false;
+      syncChatButtons();
+    }
+  }
+}
+
+// Start a fresh conversation for the shown page (drops the stored one).
+async function newChat() {
+  clearChatState();
+  if (!chat.url) return;
+  const record = await getSummary(chat.url);
+  if (!record) return;
+  const updated = clearChat(record);
+  await saveSummary(updated.url, updated);
+  el.chatMessages.innerHTML = "";
+  syncChatButtons();
+  el.chatInput.focus();
 }
 
 // --- extraction via background ---
@@ -316,6 +519,8 @@ async function refreshForCurrentTab() {
   el.pageMeta.textContent = [tab.url || ""].filter(Boolean).join(" · ");
   setFavicon(tab.url);
 
+  resetChat(); // abort any in-flight chat for the previous page
+
   // Stop painting the previous foreground job in the panel; background jobs
   // (in the worker queue) continue independently and save on completion.
   renderJobId = null;
@@ -344,6 +549,7 @@ async function refreshForCurrentTab() {
     setStatus("Loaded from history");
     el.btnRerun.classList.remove("hidden");
     syncEmptyState();
+    showChat(cached);
   } else {
     el.summary.innerHTML = "";
     setStatus("");
@@ -389,11 +595,13 @@ function viewHistoryItem(url) {
       .filter(Boolean).join(" · ");
     setFavicon(url);
     renderJobId = null; // stop painting; background jobs continue independently
+    resetChat();
     el.summary.innerHTML = DOMPurify.sanitize(parseMD(cached.summary));
     setStatus("From history");
     el.btnStop.classList.add("hidden");
     el.btnRerun.classList.remove("hidden");
     syncEmptyState();
+    showChat(cached);
   });
 }
 
@@ -408,6 +616,16 @@ el.btnStop.addEventListener("click", () => {
   setStatus("(stopped)");
 });
 el.btnSave.addEventListener("click", saveSettings);
+el.epBtn1.addEventListener("click", () => selectEndpoint("1"));
+el.epBtn2.addEventListener("click", () => selectEndpoint("2"));
+el.btnChatSend.addEventListener("click", sendChat);
+el.chatInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendChat();
+  }
+});
+el.btnChatNew.addEventListener("click", newChat);
 
 // Populate history when it is opened (and refresh on click within it).
 el.history.addEventListener("toggle", () => { if (el.history.open) renderHistory(); });
@@ -437,7 +655,9 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 (async function init() {
-  fillSettings(await loadSettings());
+  settings = await loadSettings();
+  fillSettings(settings);
+  renderEndpointSwitch();
   // Show the current tab's context (cached summary or the default state).
   await refreshForCurrentTab();
 })();

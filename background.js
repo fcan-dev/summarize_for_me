@@ -67,20 +67,21 @@ async function processNext() {
 
 async function runJob(job) {
   const { page, settings } = job;
+  const endpoint = settings.endpoint; // snapshot of the endpoint chosen when the job was queued
   broadcast({ type: "SUMMARY_STARTED", id: job.id, page: pageInfo(page) });
   job.controller = new AbortController();
 
   try {
     const messages = buildMessages(page, settings.maxInputChars || DEFAULT_MAX_INPUT_CHARS);
-    const url = `${String(settings.baseUrl).replace(/\/+$/, "")}/chat/completions`;
+    const url = `${String(endpoint.baseUrl).replace(/\/+$/, "")}/chat/completions`;
     const res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${settings.apiKey}`,
+        Authorization: `Bearer ${endpoint.apiKey}`,
       },
       body: JSON.stringify({
-        model: settings.model,
+        model: endpoint.model,
         messages,
         max_tokens: settings.maxTokens,
         stream: true,
@@ -168,9 +169,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === "ENQUEUE") {
-    // Queue a summary job. Settings/baseUrl are required to run it.
-    if (!msg.settings || !msg.settings.baseUrl || !msg.page) {
-      sendResponse({ error: "missing page or settings" });
+    // Queue a summary job. A configured endpoint (baseUrl + model) and a page are required.
+    if (!msg.settings || !msg.settings.endpoint || !msg.settings.endpoint.baseUrl || !msg.settings.endpoint.model || !msg.page) {
+      sendResponse({ error: "missing page or endpoint settings" });
       return true;
     }
     const job = enqueue(msg.page, msg.settings);
